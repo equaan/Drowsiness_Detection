@@ -1,6 +1,7 @@
 import csv
 import ctypes
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -14,14 +15,18 @@ FRAME_WIDTH = 450
 EYE_WARNING_FRAMES = 8
 EYE_DANGER_FRAMES = 15
 EYE_CRITICAL_FRAMES = 25
-YAWN_SECONDS_THRESHOLD = 3.0
-YAWN_MAR_THRESHOLD = 0.58
+YAWN_SECONDS_THRESHOLD = 1.2
+YAWN_MAR_THRESHOLD = 0.45
 NOD_FRAME_THRESHOLD = 8
 NOD_DROP_RATIO = 0.18
+YAWN_WINDOW_SECONDS = 60
+YAWN_WARNING_COUNT = 2
+YAWN_DANGER_COUNT = 4
+YAWN_CRITICAL_COUNT = 6
 
 ALARM_FLAGS = winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP
 PROJECT_ROOT = Path(__file__).resolve().parent
-ALARM_SOUND = PROJECT_ROOT / "Faah.mp3"
+ALARM_SOUND = PROJECT_ROOT / "alarm.wav"
 LOG_FILE = PROJECT_ROOT / "drowsiness_log.csv"
 MCI_ALIAS = "drowsy_alarm"
 winmm = ctypes.WinDLL("winmm")
@@ -109,6 +114,25 @@ def get_alert_state(closed_eye_frames: int):
     if closed_eye_frames >= EYE_WARNING_FRAMES:
         return "warning", "WARNING - Stay alert", (0, 255, 255)
     return "normal", "", (0, 255, 0)
+
+
+def get_yawn_alert_state(recent_yawn_count: int):
+    if recent_yawn_count >= YAWN_CRITICAL_COUNT:
+        return "critical", "CRITICAL - Frequent yawning", (0, 0, 255)
+    if recent_yawn_count >= YAWN_DANGER_COUNT:
+        return "danger", "DANGER - Repeated yawning", (0, 140, 255)
+    if recent_yawn_count >= YAWN_WARNING_COUNT:
+        return "warning", "WARNING - Frequent yawning", (0, 255, 255)
+    return "normal", "", (0, 255, 0)
+
+
+def merge_alert_states(primary_state, secondary_state):
+    priority = {"normal": 0, "warning": 1, "danger": 2, "critical": 3}
+    primary_level = primary_state[0]
+    secondary_level = secondary_state[0]
+    if priority[secondary_level] > priority[primary_level]:
+        return secondary_state
+    return primary_state
 
 
 def normalized_point(landmarks, index: int, frame_width: int, frame_height: int):
@@ -239,8 +263,10 @@ session_event_count = 0
 
 yawn_start_time = None
 yawn_detected = False
+yawn_active = False
 recent_yawn_detected = False
 yawn_mar = 0.0
+yawn_timestamps = deque()
 
 baseline_face_y = None
 head_nod_frames = 0
@@ -326,24 +352,36 @@ while True:
                 if yawn_start_time is None:
                     yawn_start_time = time.time()
                 elif time.time() - yawn_start_time >= YAWN_SECONDS_THRESHOLD:
-                    yawn_detected = True
+                    if not yawn_active:
+                        yawn_detected = True
+                        yawn_timestamps.append(time.time())
+                    yawn_active = True
                     recent_yawn_detected = True
             else:
                 yawn_start_time = None
+                yawn_active = False
         else:
             yawn_mar = 0.0
             yawn_start_time = None
+            yawn_active = False
     else:
         head_nod_frames = 0
         yawn_mar = 0.0
         yawn_start_time = None
+        yawn_active = False
 
     if eyes_found < 2:
         closed_eye_frames += 1
     else:
         closed_eye_frames = 0
 
-    alert_level, alert_message, alert_color = get_alert_state(closed_eye_frames)
+    now = time.time()
+    while yawn_timestamps and now - yawn_timestamps[0] > YAWN_WINDOW_SECONDS:
+        yawn_timestamps.popleft()
+
+    eye_alert_state = get_alert_state(closed_eye_frames)
+    yawn_alert_state = get_yawn_alert_state(len(yawn_timestamps))
+    alert_level, alert_message, alert_color = merge_alert_states(eye_alert_state, yawn_alert_state)
 
     if alert_level != "normal":
         if alert_start_time is None:
@@ -362,7 +400,7 @@ while True:
         last_logged_level = "normal"
         recent_yawn_detected = False
 
-    if yawn_detected:
+    if yawn_active or yawn_detected:
         cv2.putText(
             frame,
             "YAWNING DETECTED",
@@ -372,12 +410,21 @@ while True:
             (255, 0, 255),
             2,
         )
+        cv2.putText(
+            frame,
+            f"Yawns (last {YAWN_WINDOW_SECONDS}s): {len(yawn_timestamps)}",
+            (10, frame.shape[0] - 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (255, 0, 255),
+            2,
+        )
 
     if head_nodding_detected:
         cv2.putText(
             frame,
             "HEAD NODDING",
-            (10, frame.shape[0] - 20),
+            (10, frame.shape[0] - 110),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (255, 255, 0),
