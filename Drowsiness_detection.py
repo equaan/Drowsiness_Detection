@@ -23,11 +23,14 @@ YAWN_WINDOW_SECONDS = 60
 YAWN_WARNING_COUNT = 2
 YAWN_DANGER_COUNT = 4
 YAWN_CRITICAL_COUNT = 6
+DISTRACTION_FRAME_THRESHOLD = 15
+DISTRACTION_X_RATIO = 0.18
 
 ALARM_FLAGS = winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_LOOP
 PROJECT_ROOT = Path(__file__).resolve().parent
 ALARM_SOUND = PROJECT_ROOT / "alarm.wav"
 LOG_FILE = PROJECT_ROOT / "drowsiness_log.csv"
+ALERTS_DIR = PROJECT_ROOT / "alerts"
 MCI_ALIAS = "drowsy_alarm"
 winmm = ctypes.WinDLL("winmm")
 mp_face_mesh = mp.solutions.face_mesh
@@ -85,25 +88,35 @@ def stop_alarm():
 
 
 def ensure_log_file():
+    ALERTS_DIR.mkdir(exist_ok=True)
+
     if LOG_FILE.exists():
         return
 
     with LOG_FILE.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["timestamp", "alert_level", "duration_seconds", "yawn_detected"])
+        writer.writerow(["timestamp", "event_type", "alert_level", "duration_seconds", "details"])
 
 
-def write_log(alert_level: str, duration_seconds: float, yawn_detected: bool):
+def write_log(event_type: str, alert_level: str, duration_seconds: float, details: str):
     with LOG_FILE.open("a", newline="", encoding="utf-8") as csv_file:
         writer = csv.writer(csv_file)
         writer.writerow(
             [
                 datetime.now().isoformat(timespec="seconds"),
+                event_type,
                 alert_level,
                 f"{duration_seconds:.2f}",
-                str(yawn_detected),
+                details,
             ]
         )
+
+
+def save_alert_frame(frame, alert_level: str):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = ALERTS_DIR / f"{alert_level}_{timestamp}.jpg"
+    cv2.imwrite(str(filename), frame)
+    return filename
 
 
 def get_alert_state(closed_eye_frames: int):
@@ -260,6 +273,9 @@ alarm_active = False
 alert_start_time = None
 last_logged_level = "normal"
 session_event_count = 0
+total_yawns = 0
+total_nods = 0
+total_distractions = 0
 
 yawn_start_time = None
 yawn_detected = False
@@ -271,6 +287,10 @@ yawn_timestamps = deque()
 baseline_face_y = None
 head_nod_frames = 0
 head_nodding_detected = False
+baseline_face_x = None
+distraction_frames = 0
+distracted_detected = False
+last_saved_critical_frame = 0.0
 
 while True:
     ok, frame = camera.read()
@@ -292,6 +312,7 @@ while True:
     eyes_found = 0
     yawn_detected = False
     head_nodding_detected = False
+    distracted_detected = False
 
     if len(faces) > 0:
         x, y, w, h = max(faces, key=lambda face: face[2] * face[3])
@@ -302,6 +323,12 @@ while True:
         else:
             baseline_face_y = (baseline_face_y * 0.9) + (y * 0.1)
 
+        face_center_x = x + (w / 2.0)
+        if baseline_face_x is None:
+            baseline_face_x = face_center_x
+        else:
+            baseline_face_x = (baseline_face_x * 0.9) + (face_center_x * 0.1)
+
         nod_drop_threshold = baseline_face_y + (h * NOD_DROP_RATIO)
         if y > nod_drop_threshold:
             head_nod_frames += 1
@@ -310,6 +337,15 @@ while True:
 
         if head_nod_frames >= NOD_FRAME_THRESHOLD:
             head_nodding_detected = True
+
+        distraction_threshold = w * DISTRACTION_X_RATIO
+        if abs(face_center_x - baseline_face_x) > distraction_threshold:
+            distraction_frames += 1
+        else:
+            distraction_frames = max(0, distraction_frames - 1)
+
+        if distraction_frames >= DISTRACTION_FRAME_THRESHOLD:
+            distracted_detected = True
 
         roi_gray = gray[y : y + int(h * 0.6), x : x + w]
         roi_color = frame[y : y + int(h * 0.6), x : x + w]
@@ -366,6 +402,7 @@ while True:
             yawn_active = False
     else:
         head_nod_frames = 0
+        distraction_frames = 0
         yawn_mar = 0.0
         yawn_start_time = None
         yawn_active = False
@@ -390,9 +427,10 @@ while True:
         if alert_level != last_logged_level:
             session_event_count += 1
             write_log(
+                "alert",
                 alert_level,
                 time.time() - alert_start_time,
-                recent_yawn_detected or yawn_detected,
+                f"yawn_detected={recent_yawn_detected or yawn_detected}",
             )
             last_logged_level = alert_level
     else:
@@ -401,6 +439,10 @@ while True:
         recent_yawn_detected = False
 
     if yawn_active or yawn_detected:
+        if yawn_detected:
+            total_yawns += 1
+            write_log("yawn", "warning", 0.0, f"count_last_{YAWN_WINDOW_SECONDS}s={len(yawn_timestamps)}")
+
         cv2.putText(
             frame,
             "YAWNING DETECTED",
@@ -421,6 +463,8 @@ while True:
         )
 
     if head_nodding_detected:
+        total_nods += 1
+        write_log("head_nod", "warning", 0.0, "head_nodding_detected=True")
         cv2.putText(
             frame,
             "HEAD NODDING",
@@ -428,6 +472,19 @@ while True:
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
             (255, 255, 0),
+            2,
+        )
+
+    if distracted_detected:
+        total_distractions += 1
+        write_log("distraction", "warning", 0.0, "driver_looking_away=True")
+        cv2.putText(
+            frame,
+            "DISTRACTION DETECTED",
+            (10, frame.shape[0] - 140),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 165, 255),
             2,
         )
 
@@ -458,6 +515,10 @@ while True:
         if not alarm_active:
             play_alarm()
             alarm_active = True
+        if time.time() - last_saved_critical_frame > 5:
+            saved_path = save_alert_frame(frame, alert_level)
+            write_log("screenshot", alert_level, 0.0, saved_path.name)
+            last_saved_critical_frame = time.time()
     else:
         if alarm_active:
             stop_alarm()
@@ -480,3 +541,11 @@ stop_alarm()
 face_mesh.close()
 camera.release()
 cv2.destroyAllWindows()
+
+session_duration = time.time() - session_start_time
+print("Session summary")
+print(f"Session duration: {session_duration:.1f} seconds")
+print(f"Drowsiness events: {session_event_count}")
+print(f"Total yawns: {total_yawns}")
+print(f"Total nods: {total_nods}")
+print(f"Total distractions: {total_distractions}")

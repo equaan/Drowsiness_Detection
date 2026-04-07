@@ -14,6 +14,8 @@ __pycache__/
 *.flac
 *.ogg
 *.m4a
+*.jpg
+
 
 # Generated outputs and logs
 *.csv
@@ -26,3 +28,4 @@ output/
 Thumbs.db
 .idea/
 .vscode/
+

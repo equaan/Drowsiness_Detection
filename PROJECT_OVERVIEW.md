@@ -12,9 +12,11 @@ The system continuously analyzes facial behavior and attention-related patterns 
 
 - prolonged eye closure
 - yawning
+- frequent yawning in a time window
 - head nodding
+- distraction or looking away
 
-When these signs are detected, the project gives visual warnings on screen and can also play an audio alarm to alert the user.
+When these signs are detected, the project gives visual warnings on screen, plays an audio alarm for critical conditions, stores logs, and can capture alert screenshots.
 
 ## 3. Main Goal of the Project
 
@@ -30,11 +32,15 @@ The current system can:
 - detect a face in each video frame
 - detect the eyes and monitor whether they remain closed for too long
 - detect yawning using facial landmarks and mouth opening measurements
+- count repeated yawns within a rolling time window
 - detect head nodding by tracking downward face movement across frames
+- detect distraction by tracking horizontal face movement
 - classify drowsiness into multiple severity stages
 - show a live visual HUD with session statistics
 - play a custom looping audio alarm during critical drowsiness
-- log alert events into a CSV file for later analysis
+- log events into a CSV file for later analysis
+- capture screenshots during critical alerts
+- print a session summary when the program ends
 
 ## 5. Key Features
 
@@ -50,11 +56,21 @@ Yawning is treated as an early sign of fatigue. The system uses facial landmarks
 
 This is more reliable than simple mouth-box detection because it measures the actual geometry of the mouth.
 
-### 5.3 Head Nodding Detection
+### 5.3 Yawn Counting in a Time Window
+
+The system stores completed yawns in a rolling time window. If the user yawns several times within that period, the system can escalate the warning level even if the eyes are not closed for long.
+
+This makes the system more proactive and closer to real fatigue behavior.
+
+### 5.4 Head Nodding Detection
 
 Head nodding is another important sign of low alertness. The system tracks the vertical position of the detected face over time. If the face drops repeatedly below its normal position, the system flags it as head nodding.
 
-### 5.4 Multi-Level Alert System
+### 5.5 Distraction Detection
+
+The system also checks whether the person is moving their face too far horizontally from the normal position. If that happens for enough frames, it is treated as distraction or looking away from the road.
+
+### 5.6 Multi-Level Alert System
 
 The project does not use only a binary alert. It uses three levels:
 
@@ -64,33 +80,58 @@ The project does not use only a binary alert. It uses three levels:
 
 This makes the system more realistic because drowsiness usually develops gradually.
 
-### 5.5 On-Screen Dashboard
+### 5.7 On-Screen Dashboard
 
-The system displays a small live dashboard on the video window showing:
+The system displays a live dashboard on the video window showing:
 
 - total session time
 - number of drowsiness events in the session
 - current alert level
 - duration of the current alert
 
-### 5.6 Audio Alert System
+### 5.8 Audio Alert System
 
-When the drowsiness level becomes critical, the system plays a looping custom `.wav` alarm file from the project folder.
+When the drowsiness level becomes critical, the system plays a looping custom alarm file from the project folder.
 
-### 5.7 CSV Logging
+### 5.9 CSV Logging
 
-Every important alert event can be stored in `drowsiness_log.csv` with:
+The system logs events into `drowsiness_log.csv`.
+
+The current CSV includes:
 
 - timestamp
+- event type
 - alert level
 - duration
-- whether yawning was detected
+- details
 
-This makes the project more useful for reporting, analysis, and demonstration.
+It can log:
+
+- alert changes
+- yawns
+- head nodding
+- distraction detection
+- screenshot capture events
+
+### 5.10 Screenshot Capture
+
+When the system reaches a critical state, it automatically saves a screenshot in the `alerts/` folder.
+
+This makes the project more useful for evidence, reporting, and demo purposes.
+
+### 5.11 Session Summary
+
+When the user quits the program, the system prints a session summary showing:
+
+- total duration
+- total drowsiness events
+- total yawns
+- total nods
+- total distractions
 
 ## 6. Technology Stack
 
-This project is implemented in Python and uses a combination of computer vision, facial landmark tracking, audio alerting, and data logging.
+This project is implemented in Python and uses a combination of computer vision, facial landmark tracking, audio alerting, logging, and local evidence capture.
 
 ### 6.1 Python
 
@@ -118,6 +159,7 @@ In this project, OpenCV is responsible for:
 - eye detection using Haar cascades
 - drawing overlays, contours, bounding boxes, and text
 - showing the final live output window
+- saving screenshots during critical alerts
 
 Why OpenCV matters:
 
@@ -183,7 +225,7 @@ Library/module: built-in `csv`
 
 The CSV module is used for event logging.
 
-It records important alert events in a structured way so the results can be:
+It records important events in a structured way so the results can be:
 
 - opened in Excel
 - analyzed later
@@ -202,6 +244,7 @@ These modules are used for:
 - alert duration tracking
 - timestamp creation in logs
 - yawn duration timing
+- rolling time-window yawn counting
 
 ### 6.8 Pathlib
 
@@ -213,7 +256,20 @@ In this project, it helps manage:
 
 - alarm audio file paths
 - CSV log file paths
+- screenshot folder paths
 - project-root-relative resources
+
+### 6.9 Collections
+
+Module: built-in `collections.deque`
+
+This is used for rolling time-window tracking of yawns.
+
+Why it matters:
+
+- efficient for adding new events
+- efficient for removing old events from the front
+- ideal for “x times in y seconds” logic
 
 ## 7. Detection Logic Used in the Project
 
@@ -240,9 +296,19 @@ Using MediaPipe landmarks, the system selects lip points from the upper and lowe
 
 From this, it calculates a normalized mouth ratio. If the mouth remains open above a threshold for a certain duration, it detects a yawn.
 
-### 7.4 Head Nodding Detection
+### 7.4 Yawn Counting Logic
+
+Each completed yawn is stored in a rolling time window. If too many yawns occur within that time, the system increases the alert level.
+
+This allows repeated yawning to act as an early warning signal before full drowsiness appears.
+
+### 7.5 Head Nodding Detection
 
 The face position is tracked across frames. A running baseline of the face's vertical position is maintained. If the detected face drops lower than its expected position for repeated frames, the system marks it as head nodding.
+
+### 7.6 Distraction Detection
+
+The system also monitors horizontal face movement. If the user appears to be looking away or moving too far sideways for enough frames, it raises a distraction warning.
 
 ## 8. Output of the System
 
@@ -255,12 +321,19 @@ The system produces both real-time and stored outputs.
 - lip landmark mapping
 - mouth ratio display
 - warning text overlays
+- distraction warning
+- head nodding warning
 - flashing border during alerts
 - alarm sound during critical drowsiness
 
 ### Stored Outputs
 
 - `drowsiness_log.csv` log file
+- screenshot images in `alerts/`
+
+### Terminal Output
+
+- end-of-session statistics summary
 
 ## 9. Use Cases
 
@@ -287,10 +360,12 @@ This project is a strong academic project because it combines multiple important
 It also moves beyond a very basic demo because it includes:
 
 - multiple behavioral indicators
+- repeated-event logic
 - graded severity levels
 - real-time visualization
 - persistent logs
 - custom audio alerting
+- screenshot evidence capture
 
 That makes it easier to justify as a meaningful mini project or final-year style prototype.
 
@@ -300,8 +375,9 @@ That makes it easier to justify as a meaningful mini project or final-year style
 - does not require cloud processing
 - runs locally on a standard laptop
 - combines multiple indicators instead of relying on one
+- detects both fatigue and distraction behavior
 - easy to demonstrate in front of a teacher
-- generates measurable outputs through logs and statistics
+- generates measurable outputs through logs, counters, and screenshots
 
 ## 12. Current Limitations
 
@@ -311,7 +387,7 @@ Like all vision-based systems, this project still has limitations:
 - webcam quality affects detection accuracy
 - glasses, masks, or face angle can reduce reliability
 - eye detection with Haar cascades is simpler than deep learning methods
-- head pose detection is heuristic, not full 3D pose estimation
+- head pose and distraction logic are heuristic rather than full 3D modeling
 - thresholds may need calibration for different users
 
 These are normal research and prototype limitations and can be discussed honestly in a report.
@@ -320,12 +396,13 @@ These are normal research and prototype limitations and can be discussed honestl
 
 Future improvements could include:
 
-- replacing Haar-based eye detection with facial-landmark-based eye aspect ratio
+- replacing Haar-based eye detection with full landmark-based eye aspect ratio
 - adding blink-rate analysis
 - using full head pose estimation with solvePnP
-- storing screenshots of alert events
-- building a graphical dashboard
-- adding cloud or database storage for logs
+- generating HTML reports automatically
+- plotting drowsiness metrics as graphs
+- building a GUI dashboard
+- storing logs in a database
 - creating a desktop app or web dashboard
 - optimizing the model for embedded systems such as Raspberry Pi
 
@@ -333,8 +410,8 @@ Future improvements could include:
 
 If you need to explain it simply, you can say:
 
-This project is a webcam-based drowsiness detection system built in Python. It detects signs like eye closure, yawning, and head nodding in real time. Based on the seriousness of these signs, it shows warning messages, plays an alarm, and stores alert data in a CSV file. OpenCV is used for video processing, and MediaPipe Face Mesh is used for accurate lip landmark tracking for yawn detection.
+This project is a webcam-based drowsiness detection system built in Python. It detects signs like eye closure, yawning, repeated yawning, head nodding, and distraction in real time. Based on the seriousness of these signs, it shows warning messages, plays an alarm, stores events in a CSV file, and can save screenshots during critical alerts. OpenCV is used for video processing, and MediaPipe Face Mesh is used for accurate lip landmark tracking for yawn detection.
 
 ## 15. Short Viva/Presentation Version
 
-This project is a real-time fatigue monitoring system. It uses OpenCV for webcam capture, face detection, and eye detection, and MediaPipe Face Mesh for lip landmark analysis to detect yawning. It tracks multiple drowsiness indicators, classifies severity into stages, shows visual warnings, plays a custom alarm, and logs events for analysis.
+This project is a real-time fatigue and attention monitoring system. It uses OpenCV for webcam capture, face detection, and eye detection, and MediaPipe Face Mesh for lip landmark analysis to detect yawning. It tracks multiple drowsiness indicators, counts repeated yawns, detects distraction, classifies severity into stages, shows visual warnings, plays a custom alarm, logs event data, and stores screenshot evidence during critical alerts.
